@@ -12,6 +12,7 @@ DIVIDEND_YIELD = 0.01
 RISK_FREE_RATE = 0.03
 OPT_COLs = ["date", "maturity_date", "strike_price", "call_put", "opt_price", "spot_price"]
 UNDERLIER = '510050.SH'
+NUM_TRADING_DAYS = 250
 
 #%% Option Class, Print Util
 class OptionsUtil():
@@ -40,6 +41,120 @@ class OptionsUtil():
                 Strike: {self.strike_}, Spot: {self.spot_}, Opt: {self.opt_}"
     
     
+#%% Series Class 
+class SeriesUtil():
+    """
+    Super Class Series for Utilities
+    """
+    def __init__(self, underlier, method, from_='begin', to_='end'):
+        self._underlier = underlier
+        self._method = method
+        self.from_ = from_
+        self.to_ = to_
+        self._series = []
+        self._data = []
+        self._dates = []
+
+        self.load_dates()
+        self.load_data()
+
+    @property
+    def data(self):
+        return self._data
+
+    @property
+    def underlier(self):
+        return self._underlier
+    
+    @underlier.setter
+    def underlier(self, underlier):
+        self._underlier = underlier
+    
+    @property
+    def method(self):
+        return self._method
+    
+    @method.setter
+    def method(self, method):
+        self._method = method
+
+    @property
+    def series(self):
+        return self._series
+    
+    @property
+    def dates(self):
+        return self._dates
+    
+    def load_dates(self):
+        if self.from_ == 'begin' and self.to_ == 'end':
+            self._dates = get_dates(self.underlier)
+        else:
+            self._dates = get_dates_from_to(self.from_, self.to_, self._underlier)
+
+    def load_data(self):
+        if self.from_ == 'begin' and self.to_ == 'end':
+            self._data = get_opt_infos(self.underlier)
+        else:
+            self._data = get_opt_infos_from_to(self.from_, self.to_, self._underlier) 
+        
+
+    def plot(self):
+        return
+    
+#%% VIX Class 
+class VIXSeriesUtil(SeriesUtil):
+    """
+    Util for VIX
+    """
+    def __init__(self, underlier=UNDERLIER, method='var_swap', from_='begin', to_='end'):
+        super().__init__(underlier, method, from_, to_)
+        self._method = method
+    
+    @SeriesUtil.method.setter
+    def method(self, method):
+        if method != 'implied_vol' or method != 'var_swap': raise ValueError("Method must be either 'implied_vol' or 'var_swayp'")
+        self._method = method
+    
+    def calculate_vix(self):
+        self._series = calculate_VIX_series(self.data, self._method)
+    
+
+#%% Rolling Std and Avg Class
+class RollingSeriesUtil(SeriesUtil):
+    """
+    Util for rolling series
+    """
+    def __init__(self, underlier=UNDERLIER, window_size=20, method='simple', from_='begin', to_='end'):
+        super().__init__(underlier, method, from_, to_)
+        self._window_size = window_size
+        self._rolling_avg = []
+        self._rolling_std = []
+    
+    @property
+    def window_size(self):
+        return self._window_size
+    
+    @window_size.setter
+    def window_size(self, window_size):
+        self._window_size = window_size
+
+    def load_data(self):
+        if self.from_ == 'begin' and self.to_ == 'end':
+            self._data = get_opt_underlier_spot_price(self._underlier)
+        else:
+            self._data = get_opt_underlier_spot_price_from_to(self.from_, self.to_, self._underlier) 
+
+    def calculate_avg(self):
+        return
+    
+    def calculate_std(self):
+        self._rolling_std = calculate_rolling_std(self._data, self.window_size) 
+        self._series = self._rolling_std
+
+    
+
+        
 #%% Options Utilities
 def calculate_VIX_series(data, method):
     """
@@ -312,7 +427,14 @@ def nearest_below(rows, num):
             prev = row
     return prev
 
-        
+def calculate_rolling_std(data, window_size):
+    s = pd.Series(data)
+    ret = s.pct_change(1) # calculate return
+    return ret.rolling(window_size).std().to_numpy() * math.sqrt(NUM_TRADING_DAYS) # annulize
+
+def calculate_rolling_average():
+    return
+
 
 #%% Database APIs
 def get_opt_infos(underlier=UNDERLIER):
@@ -323,8 +445,7 @@ def get_opt_infos(underlier=UNDERLIER):
     query = f"""
     select DISTINCT a.trade_dt, b.S_INFO_MATURITYDATE, b.S_INFO_STRIKEPRICE, b.S_INFO_CALLPUT, a.S_DQ_SETTLE, d.S_DQ_CLOSE
     from wind.CHINAOPTIONEODPRICES a, wind.CHINAOPTIONDESCRIPTION b, wind.CHINAOPTIONCONTPRO c， wind.CHINACLOSEDFUNDEODPRICE d
-    where a.TRADE_DT >= '20150209' and a.TRADE_DT < '20190101'
-    and a.TRADE_DT = d.TRADE_DT
+    where a.TRADE_DT = d.TRADE_DT
     and a.S_INFO_WINDCODE = b.S_INFO_WINDCODE
     and b.S_INFO_SCCODE = c.S_INFO_CODE
     and c.S_INFO_WINDCODE in ('{underlier}')
@@ -382,7 +503,28 @@ def get_dates(underlier=UNDERLIER):
     query = f"""
     select DISTINCT a.trade_dt
     from wind.CHINAOPTIONEODPRICES a, wind.CHINAOPTIONDESCRIPTION b, wind.CHINAOPTIONCONTPRO c， wind.CHINACLOSEDFUNDEODPRICE d
-    where a.TRADE_DT >= '20150209' and a.TRADE_DT < '20190101'
+    where a.TRADE_DT = d.TRADE_DT
+    and a.S_INFO_WINDCODE = b.S_INFO_WINDCODE
+    and b.S_INFO_SCCODE = c.S_INFO_CODE
+    and c.S_INFO_WINDCODE in ('{underlier}')
+    and c.S_INFO_WINDCODE = d.S_INFO_WINDCODE
+    order by a.TRADE_DT
+    """
+    data = db_connection.executeSQL(query)
+    res = []
+    for row in data:
+        res.append(row[0])
+    return res 
+
+def get_dates_from_to(from_, to_, underlier=UNDERLIER):
+    """
+    get all dates from Database
+    """
+    db_connection = DB_connect()
+    query = f"""
+    select DISTINCT a.trade_dt
+    from wind.CHINAOPTIONEODPRICES a, wind.CHINAOPTIONDESCRIPTION b, wind.CHINAOPTIONCONTPRO c， wind.CHINACLOSEDFUNDEODPRICE d
+    where a.TRADE_DT >= '{from_}' and a.TRADE_DT <= '{to_}'
     and a.TRADE_DT = d.TRADE_DT
     and a.S_INFO_WINDCODE = b.S_INFO_WINDCODE
     and b.S_INFO_SCCODE = c.S_INFO_CODE
@@ -395,3 +537,40 @@ def get_dates(underlier=UNDERLIER):
     for row in data:
         res.append(row[0])
     return res 
+
+def get_opt_underlier_spot_price_from_to(from_, to_, underlier=UNDERLIER):
+    db_connection = DB_connect()
+    query = f"""
+    select DISTINCT a.trade_dt, d.S_DQ_CLOSE
+    from wind.CHINAOPTIONEODPRICES a, wind.CHINAOPTIONDESCRIPTION b, wind.CHINAOPTIONCONTPRO c， wind.CHINACLOSEDFUNDEODPRICE d
+    where a.TRADE_DT >= '{from_}' and a.TRADE_DT <= '{to_}'
+    and a.TRADE_DT = d.TRADE_DT
+    and a.S_INFO_WINDCODE = b.S_INFO_WINDCODE
+    and b.S_INFO_SCCODE = c.S_INFO_CODE
+    and c.S_INFO_WINDCODE in ('{underlier}')
+    and c.S_INFO_WINDCODE = d.S_INFO_WINDCODE
+    order by a.TRADE_DT
+    """
+    data = db_connection.executeSQL(query)
+    res = []
+    for row in data:
+        res.append(row[1])
+    return res
+
+def get_opt_underlier_spot_price(underlier=UNDERLIER):
+    db_connection = DB_connect()
+    query = f"""
+    select DISTINCT a.trade_dt, d.S_DQ_CLOSE
+    from wind.CHINAOPTIONEODPRICES a, wind.CHINAOPTIONDESCRIPTION b, wind.CHINAOPTIONCONTPRO c， wind.CHINACLOSEDFUNDEODPRICE d
+    where a.TRADE_DT = d.TRADE_DT
+    and a.S_INFO_WINDCODE = b.S_INFO_WINDCODE
+    and b.S_INFO_SCCODE = c.S_INFO_CODE
+    and c.S_INFO_WINDCODE in ('{underlier}')
+    and c.S_INFO_WINDCODE = d.S_INFO_WINDCODE
+    order by a.TRADE_DT
+    """
+    data = db_connection.executeSQL(query)
+    res = []
+    for row in data:
+        res.append(row[1])
+    return res
