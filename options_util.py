@@ -48,7 +48,7 @@ class OptionsUtil():
 #%% SeriesCollectionUtil Class
 class SeriesCollectionUtil():
     """
-    Util for a collection of series
+    Util for a collection of series, has util for plot and save to csv
     """
     def __init__(self):
         self.all_series = dict()
@@ -57,7 +57,6 @@ class SeriesCollectionUtil():
     def add_series(self, data, name):
         # check whether the length confrom before every adding
         length = len(data.series)
-        print(length)
         if self.add_series == False and length != self.length:
             raise Exception(f"The new series to add has length {length}, which is not equal to the length of others {self.length}.")
         self.all_series[name] = data.series
@@ -97,7 +96,6 @@ class SeriesUtil():
         self._data = []
         self._dates = []
 
-        self.load_dates()
         self.load_data()
 
     def __str__(self):
@@ -131,12 +129,14 @@ class SeriesUtil():
     def dates(self):
         return self._dates
     
-    def load_dates(self):
+    def load_data(self):
         if self.freq == 'day':
             if self.from_ == 'begin' and self.to_ == 'end':
                 self._dates = get_dates(self.underlier)
+                self._data = get_opt_infos(self.underlier)
             else:
                 self._dates = get_dates_from_to(self.from_, self.to_, self._underlier)
+                self._data = get_opt_infos_from_to(self.from_, self.to_, self._underlier) 
         if self.freq == 'min':
             dates_dict = dict()
             data_dict = dict()
@@ -148,32 +148,13 @@ class SeriesUtil():
                 data_dict[day] = all_data
             self._dates = dates_dict
             self._data = data_dict
-
-    def load_data(self):
-        if self.freq == 'day':
-            if self.from_ == 'begin' and self.to_ == 'end':
-                self._data = get_opt_infos(self.underlier)
-            else:
-                self._data = get_opt_infos_from_to(self.from_, self.to_, self._underlier) 
-        # if self.freq == 'min':
-        #     # store as dict??
-        #     data_dict = dict()
-        #     for day in self._dates:
-        #         data_dict[day] = csv_get_opt_at(day, self.underlier)
-        #         if data_dict[day] == None: break
-        #     self._data = data_dict
-
-
-
-    def plot(self):
-        return
     
 #%% VIX Class 
 class VIXSeriesUtil(SeriesUtil):
     """
     Util for VIX
     """
-    def __init__(self, underlier=UNDERLIER, method='var_swap', from_='begin', to_='end', freq='min'):
+    def __init__(self, underlier=UNDERLIER, method='var_swap', from_='begin', to_='end', freq='day'):
         super().__init__(underlier, method, from_, to_, freq)
         self._method = method
 
@@ -186,9 +167,7 @@ class VIXSeriesUtil(SeriesUtil):
         if self.freq == 'day':
             self._series = calculate_VIX_series(self.data, self._method, self.freq)
         if self.freq == 'min':
-            # load data from csv first
             for day in self._data:
-                # print(self._data[day])
                 self._series += calculate_VIX_series(self._data[day], self._method, freq='min')
                 
     
@@ -239,6 +218,7 @@ def calculate_VIX_series(data, method='var_swap', freq=DEFAULT_FREQ):
         df = pd.DataFrame(data, columns=OPT_COLs)
         df = df.replace([708001000, 708002000], ['CALL', 'PUT']) # code -> text
         for idx, group in df.groupby(['date']):
+            print(idx)
             df_sub = group
             terms = implied_volatility_method(df_sub) if method == 'implied_vol' else variance_swap_method(df_sub)
             near_term = terms[0]
@@ -298,7 +278,6 @@ def calculate_variance_swap_vol(df, term):
     :return sigma
     :return TTE
     """
-    # df = pd.DataFrame(data, columns=OPT_COLs)
     df['maturity_group'] = pd.factorize(df["maturity_date"], sort=True)[0] + 1
     df_grouped = df.groupby(df["maturity_group"]) # split by expiration date 1->near, 2->next, ignore 3&4
     df_near = df_grouped.get_group(term)
@@ -311,6 +290,7 @@ def calculate_variance_swap_vol(df, term):
         return None
     tte_near_frac = tte_near / 365
     df_near = df_near.pivot(index="strike_price", columns="call_put", values='opt_price')
+    # two alternative way 
     # df_near = pd.pivot_table(df_near, values='opt_price', index="strike_price", columns="call_put")
     # df_near = df_near.groupby(['call_put', 'strike_price']).agg({'opt_price': np.mean}).unstack(level='call_put')
     df_near["callPutDiff"] = (df_near["CALL"] - df_near["PUT"]).abs() # find the diff between call&put
@@ -348,8 +328,6 @@ def calculate_variance_swap_vol(df, term):
     s = pd.Series(mid_col)
     mid = s[s].index[0]
     df['p_ki'].iat[mid] = (df['PUT'].iat[mid] + df['CALL'].iat[mid]) / 2
-
-
     # Do not need this part in calculation, good for table-viz
     # df['optionType'] = ""
     # for ki in df['strike_price']:
@@ -363,9 +341,7 @@ def calculate_variance_swap_vol(df, term):
 
     # comment out for performence
     # df = df.drop(columns=['call', 'put', 'callPutDiff'])
-
     # Contribution by Strike
-    ert = calculate_expRT(tte_near_frac)
     # Iterrows() has SERIOUS performence issue, should AVOID
     # df['contributionByStrike'] = ""
     # contributionByStrike = []
@@ -381,6 +357,7 @@ def calculate_variance_swap_vol(df, term):
     #         diff = abs(df.loc[idx+1, 'strike_price'] - df.loc[idx-1, 'strike_price']) / 2
     #     curr = diff / ki ** 2 * ert * df['p_ki'].iat[idx]
     #     contributionByStrike.append(curr)
+    ert = calculate_expRT(tte_near_frac)
     first_diff = df['strike_price'].diff().fillna(0)
     second_diff = first_diff.shift(-1).fillna(0)
     diff = (first_diff + second_diff) / 2
@@ -388,7 +365,6 @@ def calculate_variance_swap_vol(df, term):
     diff.iat[-1] = diff.iat[-1] * 2
     # comment for performance
     # df['contributionByStrike'] = df['p_ki'].mul(ert).mul(diff) / (df['strike_price'].pow(2))
-
     sec_term = 1 / tte_near_frac * (forwardPrice / k0 - 1) ** 2
     first_term = (df['p_ki'].mul(ert).mul(diff) / df['strike_price'].pow(2)).sum() * 2 / tte_near_frac
     sig_2 = first_term - sec_term
@@ -503,7 +479,6 @@ def calculate_IV_curve(data, term, plot=False, avg=True):
         return statistics.mean(ivols), tte
     return ivols, tte
 
-
 #%% General Utilities
 # used in VIX calculation -- variance swap method
 # calculate e^RT
@@ -570,6 +545,9 @@ def dttm_formatter(str):
     return '-'.join([str[:4], str[4:6], str[6:]])
 
 def get_trading_days(from_='2021-01-01', to_='2021-05-30'):
+    """
+    get all the trading days from a time range
+    """
     if len(from_) == 8 and len(to_) == 8:
         from_ = dttm_formatter(from_)
         to_ = dttm_formatter(to_)
@@ -580,6 +558,9 @@ def get_trading_days(from_='2021-01-01', to_='2021-05-30'):
     return days.strftime('%Y%m%d')
 
 def col2col(key_col, val_col):
+    """
+    util for converting column names
+    """
     zip_iter = zip(key_col, val_col)
     res_dict = dict(zip_iter)
     return res_dict
@@ -687,6 +668,7 @@ def get_dates_from_to(from_, to_, underlier=UNDERLIER):
     return res 
 
 def get_opt_underlier_spot_price_from_to(from_, to_, underlier=UNDERLIER):
+    """ underlier spot price """
     db_connection = DB_connect()
     query = f"""
     select DISTINCT a.trade_dt, d.S_DQ_CLOSE
@@ -706,6 +688,7 @@ def get_opt_underlier_spot_price_from_to(from_, to_, underlier=UNDERLIER):
     return res
 
 def get_opt_underlier_spot_price(underlier=UNDERLIER):
+    """ underlier spot price """
     db_connection = DB_connect()
     query = f"""
     select DISTINCT a.trade_dt, d.S_DQ_CLOSE
@@ -724,6 +707,7 @@ def get_opt_underlier_spot_price(underlier=UNDERLIER):
     return res
 
 def get_contracts(underlier=UNDERLIER):
+    """ contract info """
     db_connection = DB_connect()
     query = f"""
     SELECT b.S_INFO_WINDCODE, b.S_INFO_MATURITYDATE, b.S_INFO_STRIKEPRICE, b.S_INFO_CALLPUT 
@@ -736,6 +720,7 @@ def get_contracts(underlier=UNDERLIER):
 
 #%% Read CSV APIs
 def csv_get_underlier_spot_at(date=DEFAULT_DATE, underlier=UNDERLIER):
+    """ underlier price (spot price) """
     path = f'/Users/ruochen/HFData/fund_min_insight/Bar_1Min/2021/{date}.csv'
     df = pd.read_csv(path)
     df = df[df['windcode'] == underlier]
@@ -743,12 +728,14 @@ def csv_get_underlier_spot_at(date=DEFAULT_DATE, underlier=UNDERLIER):
 
 
 def csv_get_opt_price_at(date=DEFAULT_DATE, underlier=UNDERLIER):
+    """ option contract price """
     path = f'/Users/ruochen/HFData/option_min_insight/Bar_1Min/2021/{date}.csv'
     df = pd.read_csv(path)
     return df
 
 
 def csv_get_opt_desc(underlier=UNDERLIER):
+    """ option contract description """
     path = './option_description.csv'
     df = pd.read_csv(path)
     df = df[df['underlier'] == underlier]
@@ -756,6 +743,7 @@ def csv_get_opt_desc(underlier=UNDERLIER):
     return df
 
 def csv_get_opt_at(date=DEFAULT_DATE, underlier=UNDERLIER):
+    """ all opt info you need to calculate ivix """ 
     # merge opt_desc(static table) with opt_price(time-series table)
     try:
         df_opt_price = csv_get_opt_price_at(date, underlier)
